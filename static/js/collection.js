@@ -196,7 +196,11 @@ function bindTableActions() {
   });
 
   document.querySelectorAll("[data-zoom]").forEach(image => {
-    image.addEventListener("click", () => openLightbox(image.src));
+    image.addEventListener("click", () => {
+      const src = image.src || "";
+      if (!src || src.includes("pokeball") || !image.complete || image.naturalWidth === 0) return;
+      openLightbox(src);
+    });
   });
 }
 
@@ -310,8 +314,15 @@ function selectResult(result) {
 function openLightbox(src) {
   collectionEls.lightboxImage.src = src;
   collectionEls.lightbox.classList.remove("hidden");
+  history.pushState({ lightbox: true }, "");
 }
 
 function closeLightbox() {
   collectionEls.lightbox.classList.add("hidden");
 }
+
+window.addEventListener("popstate", (event) => {
+  if (!collectionEls.lightbox.classList.contains("hidden")) {
+    closeLightbox();
+  }
+});

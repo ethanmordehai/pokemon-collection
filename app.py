@@ -9,6 +9,7 @@ import re
 import statistics
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -23,10 +24,12 @@ from flask import Flask, Response, jsonify, render_template, request
 from flask_cors import CORS
 
 scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
+scraper.headers.update({"Referer": "https://www.google.fr/", "Accept": "text/html,application/xhtml+xml"})
 
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_FILE = BASE_DIR / "collection.json"
+EBAY_APP_ID = os.environ.get("EBAY_APP_ID", "")
 
 CATEGORIES = [
     "ETB/BUNDLE",
@@ -205,31 +208,41 @@ def parse_price(text):
 
 
 def get_ebay_market_price(search_query):
+    if not EBAY_APP_ID:
+        return get_cardmarket_price(search_query)
     query_clean = re.sub(r"pokemon scellé|scellé|neuf", "", search_query, flags=re.IGNORECASE).strip()
-    for tentative, query in enumerate([
-        f"{query_clean} pokemon sealed",
-        f"{query_clean} pokemon neuf",
-    ]):
-        url = (f"https://www.ebay.fr/sch/i.html?_nkw={quote_plus(query)}&LH_Sold=1&LH_Complete=1&_sop=13")
-        try:
-            response = scraper.get(url, timeout=15)
-            if response.status_code != 200:
+    try:
+        url = "https://svcs.ebay.com/services/search/FindingService/v1"
+        params = {
+            "OPERATION-NAME": "findCompletedItems",
+            "SERVICE-VERSION": "1.0.0",
+            "SECURITY-APPNAME": EBAY_APP_ID,
+            "RESPONSE-DATA-FORMAT": "JSON",
+            "keywords": f"{query_clean} pokemon scellé",
+            "itemFilter(0).name": "SoldItemsOnly",
+            "itemFilter(0).value": "true",
+            "itemFilter(1).name": "Condition",
+            "itemFilter(1).value": "1000",
+            "sortOrder": "EndTimeSoonest",
+            "paginationInput.entriesPerPage": "15",
+            "outputSelector": "SellingStatus",
+        }
+        response = requests.get(url, params=params, timeout=10)
+        data = response.json()
+        items = data.get("findCompletedItemsResponse", [{}])[0].get("searchResult", [{}])[0].get("item", [])
+        prices = []
+        for item in items:
+            try:
+                price = float(item["sellingStatus"][0]["currentPrice"][0]["__value__"])
+                if 1 < price < 5000:
+                    prices.append(price)
+            except Exception:
                 continue
-            soup = BeautifulSoup(response.text, "html.parser")
-            prices = []
-            for selector in [".s-item__price", ".POSITIVE", "span[class*='s-item__price']", "span[class*='POSITIVE']"]:
-                for tag in soup.select(selector):
-                    price = parse_price(tag.get_text(" ", strip=True))
-                    if price:
-                        prices.append(price)
-                if prices:
-                    break
-            if len(prices) >= 2:
-                return round(statistics.median(prices[:12]), 2)
-        except requests.RequestException as exc:
-            app.logger.warning("eBay requête échouée (tentative %s): %s", tentative + 1, exc)
-        time.sleep(random.uniform(0.8, 1.5))
-    return None
+        if len(prices) >= 2:
+            return round(statistics.median(prices), 2)
+    except Exception as exc:
+        app.logger.warning("eBay API failed: %s", exc)
+    return get_cardmarket_price(search_query)
 
 
 def get_cardmarket_price(search_query):
@@ -330,11 +343,14 @@ def get_article_image(url):
     if not url:
         return ""
     try:
-        resp = scraper.get(url, timeout=6)
+        # Suivre la redirection Google News pour obtenir l'URL réelle
+        resp = scraper.get(url, timeout=8, allow_redirects=True)
+        final_url = resp.url
         soup = BeautifulSoup(resp.text, "html.parser")
-        og = soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "twitter:image"})
-        if og and og.get("content"):
-            return og["content"]
+        for attr in [("property", "og:image"), ("name", "twitter:image"), ("property", "og:image:url")]:
+            tag = soup.find("meta", {attr[0]: attr[1]})
+            if tag and tag.get("content", "").startswith("http"):
+                return tag["content"]
     except Exception:
         pass
     return ""
@@ -375,7 +391,6 @@ def fetch_news():
                     if img_tag:
                         image_url = img_tag.get("src", "")
                 entry_url = entry.get("link", "")
-                image_url = image_url or get_article_image(entry_url)
                 articles.append({"title": title, "summary": summary or "Clique sur Lire la suite pour voir l'article.", "source": feed_info["nom"], "date": entry.get("published", ""), "url": entry_url, "image": image_url, "tags": tag_news(title, summary)})
         except Exception as exc:
             app.logger.warning("Google News RSS '%s' échoué : %s", feed_info["nom"], exc)
@@ -387,11 +402,22 @@ def fetch_news():
                 summary = compact_text(entry.get("summary", ""))
                 if title and title not in seen_titles:
                     entry_url = entry.get("link", "")
-                    articles.append({"title": title, "summary": summary, "source": "Pokémon Officiel FR", "date": entry.get("published", ""), "url": entry_url, "image": get_article_image(entry_url), "tags": tag_news(title, summary)})
+                    articles.append({"title": title, "summary": summary, "source": "Pokémon Officiel FR", "date": entry.get("published", ""), "url": entry_url, "image": "", "tags": tag_news(title, summary)})
         except Exception as exc:
             app.logger.warning("RSS Pokémon officiel échoué : %s", exc)
     if not articles:
         articles = [{"title": "Connexion aux sources d'actualité impossible", "summary": "Les flux RSS ne sont pas accessibles. Vérifie ta connexion et clique sur Actualiser.", "source": "Hors ligne", "date": now_iso(), "url": "https://www.pokemon.com/fr/actus-pokemon", "image": "", "tags": ["🆕 Annonce"]}]
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        future_by_index = {
+            executor.submit(get_article_image, article.get("url", "")): index
+            for index, article in enumerate(articles)
+            if article.get("url")
+        }
+        for future, index in future_by_index.items():
+            try:
+                articles[index]["image"] = future.result()
+            except Exception:
+                pass
     one_year_ago = datetime.now(timezone.utc) - timedelta(days=365)
     articles = [a for a in articles if (parse_article_date(a["date"]) or datetime.now(timezone.utc)) > one_year_ago]
     articles.sort(key=lambda a: parse_article_date(a["date"]) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
