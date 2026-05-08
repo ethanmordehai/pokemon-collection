@@ -142,6 +142,9 @@ function renderRow(item) {
   const variation = item.variation_pct;
   const up = Number(variation || 0) >= 0;
   const hot = variation !== null && Math.abs(Number(variation)) >= 20;
+  const sourceLink = item.price_source_url
+    ? `<a class="source-link" href="${escapeHtml(item.price_source_url)}" target="_blank" rel="noreferrer">voir source · ${escapeHtml(item.price_source || "source")}</a>`
+    : "";
   let status = "";
   if (item.price_status === "failed") {
     status = `<div class="status-warn">⚠️ Prix introuvable</div>`;
@@ -158,7 +161,13 @@ function renderRow(item) {
       </td>
       <td><span class="editable" data-field="quantite" data-type="number">${item.quantite}</span></td>
       <td><span class="editable" data-field="prix_achete" data-type="money">${euro(item.prix_achete)}</span></td>
-      <td>${item.prix_marche === null || item.prix_marche === undefined ? "—" : euro(item.prix_marche)} <button class="icon-btn" title="Mettre à jour ce prix" data-refresh>🔄</button></td>
+      <td>
+        <div class="market-price-cell">
+          <span>${item.prix_marche === null || item.prix_marche === undefined ? "—" : euro(item.prix_marche)}</span>
+          <button class="icon-btn" title="Mettre à jour ce prix" data-refresh>🔄</button>
+        </div>
+        ${sourceLink}
+      </td>
       <td>${euro(item.val_marche_totale)}</td>
       <td>${variation === null || variation === undefined ? "—" : `<span class="variation-badge ${up ? "up" : "down"} ${hot ? "hot" : ""}">${up ? "▲" : "▼"} ${Math.abs(Number(variation)).toFixed(1)}%</span>`}</td>
       <td title="${escapeHtml(item.derniere_maj || "")}">${dateLabel(item.derniere_maj)}</td>

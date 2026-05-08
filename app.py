@@ -144,6 +144,8 @@ def compute_item(item):
     item.setdefault("search_query", item.get("nom", ""))
     item.setdefault("derniere_maj", "")
     item.setdefault("price_status", "pending")
+    item.setdefault("price_source", "")
+    item.setdefault("price_source_url", "")
     return item
 
 
@@ -207,10 +209,33 @@ def parse_price(text):
     return price if 1 < price < 5000 else None
 
 
+def clean_price_query(search_query, remove_pokemon=False):
+    pattern = r"pokemon scellé|scellé|neuf"
+    if remove_pokemon:
+        pattern = r"pokemon scellé|scellé|neuf|pokemon"
+    return re.sub(pattern, "", search_query, flags=re.IGNORECASE).strip()
+
+
+def ebay_source_url(search_query):
+    query_clean = clean_price_query(search_query)
+    query = f"{query_clean} pokemon scellé"
+    return f"https://www.ebay.fr/sch/i.html?_nkw={quote_plus(query)}&LH_Sold=1&LH_Complete=1&_sop=13"
+
+
+def cardmarket_source_url(search_query):
+    query_clean = clean_price_query(search_query, remove_pokemon=True)
+    return f"https://www.cardmarket.com/fr/Pokemon/Products/Search?searchString={quote_plus(query_clean)}&idCategory=18"
+
+
+def pricecharting_source_url(search_query):
+    query_clean = clean_price_query(search_query)
+    return f"https://www.pricecharting.com/search-products?q={quote_plus(query_clean + ' pokemon')}&type=prices"
+
+
 def get_ebay_market_price(search_query):
     if not EBAY_APP_ID:
-        return get_cardmarket_price(search_query)
-    query_clean = re.sub(r"pokemon scellé|scellé|neuf", "", search_query, flags=re.IGNORECASE).strip()
+        return None
+    query_clean = clean_price_query(search_query)
     try:
         url = "https://svcs.ebay.com/services/search/FindingService/v1"
         params = {
@@ -246,8 +271,8 @@ def get_ebay_market_price(search_query):
 
 
 def get_cardmarket_price(search_query):
-    query_clean = re.sub(r"pokemon scellé|scellé|neuf|pokemon", "", search_query, flags=re.IGNORECASE).strip()
-    url = f"https://www.cardmarket.com/fr/Pokemon/Products/Search?searchString={quote_plus(query_clean)}&idCategory=18"
+    query_clean = clean_price_query(search_query, remove_pokemon=True)
+    url = cardmarket_source_url(search_query)
     try:
         response = scraper.get(url, timeout=14)
         if response.status_code != 200:
@@ -300,8 +325,8 @@ def get_product_image(search_query):
 
 
 def get_pricecharting_price(search_query):
-    query_clean = re.sub(r"pokemon scellé|scellé|neuf", "", search_query, flags=re.IGNORECASE).strip()
-    url = f"https://www.pricecharting.com/search-products?q={quote_plus(query_clean + ' pokemon')}&type=prices"
+    query_clean = clean_price_query(search_query)
+    url = pricecharting_source_url(search_query)
     try:
         response = scraper.get(url, timeout=10)
         if response.status_code != 200:
@@ -326,27 +351,46 @@ def update_item_price(item):
     search = item.get("search_query") or item.get("nom", "")
     timestamp = now_iso()
     ancien_prix = item.get("prix_marche")
+    ancienne_source = item.get("price_source", "")
+    ancienne_source_url = item.get("price_source_url", "")
+    source = ""
+    source_url = ""
 
     # Essai 1 : Cardmarket
     market_price = get_cardmarket_price(search)
+    if market_price is not None:
+        source = "Cardmarket"
+        source_url = cardmarket_source_url(search)
     # Essai 2 : PriceCharting
     if market_price is None:
         market_price = get_pricecharting_price(search)
+        if market_price is not None:
+            source = "PriceCharting"
+            source_url = pricecharting_source_url(search)
     # Essai 3 : eBay (si clé dispo)
     if market_price is None:
         market_price = get_ebay_market_price(search)
+        if market_price is not None:
+            source = "eBay"
+            source_url = ebay_source_url(search)
 
     if market_price is not None:
         item["prix_marche"] = market_price
         item["derniere_maj"] = timestamp
         item["price_status"] = "ok"
+        item["price_source"] = source
+        item["price_source_url"] = source_url
     else:
         # IMPORTANT : conserver l'ancien prix au lieu de mettre 0
         if ancien_prix is not None:
             item["prix_marche"] = ancien_prix
             item["price_status"] = "cached"
+            item["price_source"] = ancienne_source
+            item["price_source_url"] = ancienne_source_url
         else:
             item["price_status"] = "failed"
+            item["price_source"] = ""
+            item["price_source_url"] = ""
         item["derniere_maj"] = timestamp
 
     if not item.get("image_url") or item.get("image_url") == PLACEHOLDER_IMAGE:
@@ -671,7 +715,7 @@ def api_export_csv():
     fieldnames = [
         "id", "categorie", "nom", "quantite", "prix_achete", "prix_marche",
         "val_marche_totale", "variation_pct", "derniere_maj", "image_url",
-        "search_query", "price_status",
+        "search_query", "price_status", "price_source", "price_source_url",
     ]
     writer = csv.DictWriter(output, fieldnames=fieldnames)
     writer.writeheader()
