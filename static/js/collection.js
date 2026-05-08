@@ -142,7 +142,12 @@ function renderRow(item) {
   const variation = item.variation_pct;
   const up = Number(variation || 0) >= 0;
   const hot = variation !== null && Math.abs(Number(variation)) >= 20;
-  const status = item.price_status === "failed" ? `<div class="status-warn">⚠️ Prix estimé le ${dateLabel(item.derniere_maj)}</div>` : "";
+  let status = "";
+  if (item.price_status === "failed") {
+    status = `<div class="status-warn">⚠️ Prix introuvable</div>`;
+  } else if (item.price_status === "cached") {
+    status = `<div class="status-warn">🕐 Dernier prix connu : ${dateLabel(item.derniere_maj)}</div>`;
+  }
   return `
     <tr class="item-row" data-id="${escapeHtml(item.id)}">
       <td><img class="product-img" src="${escapeHtml(item.image_url || "/static/images/pokeball.svg")}" alt="${escapeHtml(item.nom)}" data-zoom></td>

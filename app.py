@@ -299,20 +299,56 @@ def get_product_image(search_query):
     return PLACEHOLDER_IMAGE
 
 
+def get_pricecharting_price(search_query):
+    query_clean = re.sub(r"pokemon scellé|scellé|neuf", "", search_query, flags=re.IGNORECASE).strip()
+    url = f"https://www.pricecharting.com/search-products?q={quote_plus(query_clean + ' pokemon')}&type=prices"
+    try:
+        response = scraper.get(url, timeout=10)
+        if response.status_code != 200:
+            return None
+        soup = BeautifulSoup(response.text, "html.parser")
+        prices = []
+        for selector in ["td.price", ".price", "span.price"]:
+            for tag in soup.select(selector):
+                price = parse_price(tag.get_text(" ", strip=True))
+                if price and 1 < price < 5000:
+                    prices.append(price)
+            if prices:
+                break
+        if prices:
+            return round(statistics.median(prices[:8]), 2)
+    except Exception as exc:
+        app.logger.warning("PriceCharting erreur pour '%s': %s", query_clean, exc)
+    return None
+
+
 def update_item_price(item):
     search = item.get("search_query") or item.get("nom", "")
     timestamp = now_iso()
-    market_price = get_ebay_market_price(search)
+    ancien_prix = item.get("prix_marche")
+
+    # Essai 1 : Cardmarket
+    market_price = get_cardmarket_price(search)
+    # Essai 2 : PriceCharting
     if market_price is None:
-        market_price = get_cardmarket_price(search)
+        market_price = get_pricecharting_price(search)
+    # Essai 3 : eBay (si clé dispo)
+    if market_price is None:
+        market_price = get_ebay_market_price(search)
+
     if market_price is not None:
         item["prix_marche"] = market_price
         item["derniere_maj"] = timestamp
         item["price_status"] = "ok"
     else:
-        item["price_status"] = "failed"
-        if not item.get("derniere_maj"):
-            item["derniere_maj"] = timestamp
+        # IMPORTANT : conserver l'ancien prix au lieu de mettre 0
+        if ancien_prix is not None:
+            item["prix_marche"] = ancien_prix
+            item["price_status"] = "cached"
+        else:
+            item["price_status"] = "failed"
+        item["derniere_maj"] = timestamp
+
     if not item.get("image_url") or item.get("image_url") == PLACEHOLDER_IMAGE:
         item["image_url"] = get_product_image(search)
     return compute_item(item)
