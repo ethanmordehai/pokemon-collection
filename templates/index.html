@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PokéCollect</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  </head>
+  <body>
+    <div class="stars" aria-hidden="true"></div>
+
+    <header class="topbar">
+      <a class="brand" href="/" data-route="collection" aria-label="PokéCollect">
+        <img src="{{ url_for('static', filename='images/pokeball.svg') }}" alt="" class="brand-ball">
+        <span>POKÉCOLLECT</span>
+      </a>
+      <nav class="nav-tabs" aria-label="Navigation principale">
+        <button class="nav-tab active" data-view="collection">🎴 Ma Collection</button>
+        <button class="nav-tab" data-view="marche">📰 Marché TCG</button>
+      </nav>
+      <div class="last-sync" id="lastSync">Dernière MAJ : jamais</div>
+    </header>
+
+    <main class="app-shell">
+      <section id="collectionView" class="view active-view">
+        <div class="stats-grid">
+          <article class="stat-card">
+            <span class="stat-value" id="statItems">0</span>
+            <span class="stat-label">Items total</span>
+          </article>
+          <article class="stat-card">
+            <span class="stat-value" id="statCost">0,00 €</span>
+            <span class="stat-label">Coût achat</span>
+          </article>
+          <article class="stat-card">
+            <span class="stat-value" id="statMarket">0,00 €</span>
+            <span class="stat-label">Valeur marché</span>
+          </article>
+          <article class="stat-card pnl-card">
+            <span class="stat-value" id="statPnl">0,00 €</span>
+            <span class="stat-label" id="statPnlPct">PnL 0%</span>
+          </article>
+        </div>
+
+        <div class="toolbar">
+          <label class="select-wrap">
+            <span>Catégorie</span>
+            <select id="categoryFilter">
+              <option value="ALL">Toutes les catégories</option>
+            </select>
+          </label>
+          <button class="primary-action" id="addItemBtn">+ Ajouter un item</button>
+          <button class="ghost-action" id="updateAllBtn">🔄 Mettre à jour tous les prix</button>
+          <a class="ghost-action export-link" href="/api/export/csv">Export CSV</a>
+        </div>
+
+        <div class="progress-panel hidden" id="progressPanel">
+          <div class="progress-copy" id="progressText">Préparation...</div>
+          <div class="progress-track"><span id="progressBar"></span></div>
+        </div>
+
+        <div class="collection-table" id="collectionTable" aria-live="polite"></div>
+      </section>
+
+      <section id="marcheView" class="view">
+        <div class="market-layout">
+          <section class="news-feed">
+            <div class="section-heading">
+              <h1>Marché TCG Pokémon</h1>
+              <button class="ghost-action" id="refreshNewsBtn">Actualiser</button>
+            </div>
+            <div id="newsGrid" class="news-grid"></div>
+          </section>
+          <aside class="trend-sidebar">
+            <h2>Tendances prix</h2>
+            <div class="trend-block">
+              <h3>Top hausses</h3>
+              <div id="trendUp"></div>
+            </div>
+            <div class="trend-block">
+              <h3>Top baisses</h3>
+              <div id="trendDown"></div>
+            </div>
+          </aside>
+        </div>
+      </section>
+    </main>
+
+    <div class="modal-backdrop hidden" id="itemModal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal">
+        <button class="icon-close" id="closeModalBtn" aria-label="Fermer">×</button>
+        <h2 id="modalTitle">Ajouter un item</h2>
+
+        <div class="search-row">
+          <input id="productSearch" type="search" placeholder="Rechercher ex: ETB foudre">
+          <button class="primary-action" id="searchProductBtn">Rechercher</button>
+        </div>
+        <div class="result-grid" id="searchResults"></div>
+
+        <form id="itemForm" class="item-form">
+          <img id="formPreview" src="{{ url_for('static', filename='images/pokeball.svg') }}" alt="Aperçu produit">
+          <label>Nom<input name="nom" required></label>
+          <label>Catégorie<select name="categorie" required></select></label>
+          <label>Quantité<input name="quantite" type="number" min="1" value="1" required></label>
+          <label>Prix acheté (€)<input name="prix_achete" type="number" step="0.01" min="0" value="0" required></label>
+          <label>Recherche eBay<input name="search_query" required></label>
+          <input name="image_url" type="hidden">
+          <button class="primary-action form-submit" type="submit">Confirmer</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="image-lightbox hidden" id="imageLightbox">
+      <button class="icon-close" id="closeLightboxBtn" aria-label="Fermer">×</button>
+      <img id="lightboxImage" alt="Produit agrandi">
+    </div>
+
+    <script src="{{ url_for('static', filename='js/api.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/marche.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/collection.js') }}"></script>
+  </body>
+</html>

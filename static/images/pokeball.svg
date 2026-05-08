@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-label="Pokeball">
+  <defs>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <circle cx="60" cy="60" r="52" fill="#f8fafc" stroke="#111827" stroke-width="8"/>
+  <path d="M10 58a50 50 0 0 1 100 0H10z" fill="#cc0000"/>
+  <path d="M8 58h104v10H8z" fill="#111827"/>
+  <circle cx="60" cy="63" r="20" fill="#111827"/>
+  <circle cx="60" cy="63" r="11" fill="#f8fafc" filter="url(#glow)"/>
+</svg>
