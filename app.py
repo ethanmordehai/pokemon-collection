@@ -1,4 +1,5 @@
 import csv
+import email.utils
 import hashlib
 import io
 import json
@@ -9,16 +10,19 @@ import statistics
 import threading
 import time
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from queue import Queue
 from urllib.parse import quote_plus
 
 import feedparser
 import requests
+import cloudscraper
 from bs4 import BeautifulSoup
 from flask import Flask, Response, jsonify, render_template, request
 from flask_cors import CORS
+
+scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -208,7 +212,7 @@ def get_ebay_market_price(search_query):
     ]):
         url = (f"https://www.ebay.fr/sch/i.html?_nkw={quote_plus(query)}&LH_Sold=1&LH_Complete=1&_sop=13")
         try:
-            response = requests.get(url, headers=headers(), timeout=15)
+            response = scraper.get(url, timeout=15)
             if response.status_code != 200:
                 continue
             soup = BeautifulSoup(response.text, "html.parser")
@@ -230,14 +234,19 @@ def get_ebay_market_price(search_query):
 
 def get_cardmarket_price(search_query):
     query_clean = re.sub(r"pokemon scellé|scellé|neuf|pokemon", "", search_query, flags=re.IGNORECASE).strip()
-    url = f"https://www.cardmarket.com/fr/Pokemon/Sealed-Products/Search?searchString={quote_plus(query_clean)}"
+    url = f"https://www.cardmarket.com/fr/Pokemon/Products/Search?searchString={quote_plus(query_clean)}&idCategory=18"
     try:
-        response = requests.get(url, headers=headers(), timeout=14)
+        response = scraper.get(url, timeout=14)
         if response.status_code != 200:
             return None
         soup = BeautifulSoup(response.text, "html.parser")
         prices = []
-        for selector in [".price-container .fw-bold", ".price-container strong", "dt.col-6 + dd.col-6 span", ".info-list-container .font-weight-bold", "div.col-price span"]:
+        for selector in [
+            "div.col-price span.font-weight-bold",
+            "div.price-container",
+            "span.color-primary.small",
+            "div.info-list-container dd",
+        ]:
             for tag in soup.select(selector):
                 price = parse_price(tag.get_text(" ", strip=True))
                 if price and 1 < price < 5000:
@@ -254,7 +263,7 @@ def get_cardmarket_price(search_query):
 def get_product_image(search_query):
     try:
         tcg_url = "https://api.pokemontcg.io/v2/sets"
-        response = requests.get(tcg_url, params={"q": f'name:"{search_query}"'}, headers=headers(), timeout=8)
+        response = scraper.get(tcg_url, params={"q": f'name:"{search_query}"'}, timeout=8)
         if response.ok:
             for item in response.json().get("data", []):
                 images = item.get("images") or {}
@@ -267,7 +276,7 @@ def get_product_image(search_query):
 
     try:
         search_url = f"https://duckduckgo.com/html/?q={quote_plus(search_query + ' pokemon scellé')}"
-        response = requests.get(search_url, headers=headers(), timeout=8)
+        response = scraper.get(search_url, timeout=8)
         soup = BeautifulSoup(response.text, "html.parser")
         image = soup.select_one("img")
         if image and image.get("src"):
@@ -317,6 +326,29 @@ def compact_text(text, limit=520):
     return clean[:limit].rsplit(" ", 1)[0] + "..." if len(clean) > limit else clean
 
 
+def get_article_image(url):
+    if not url:
+        return ""
+    try:
+        resp = scraper.get(url, timeout=6)
+        soup = BeautifulSoup(resp.text, "html.parser")
+        og = soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "twitter:image"})
+        if og and og.get("content"):
+            return og["content"]
+    except Exception:
+        pass
+    return ""
+
+
+def parse_article_date(date_str):
+    if not date_str:
+        return None
+    try:
+        return datetime(*email.utils.parsedate(date_str)[:6], tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
 def fetch_news():
     GOOGLE_NEWS_FEEDS = [
         {"url": "https://news.google.com/rss/search?q=pokemon+TCG+carte+france+restock&hl=fr&gl=FR&ceid=FR:fr", "nom": "Restocks FR"},
@@ -342,7 +374,9 @@ def fetch_news():
                     img_tag = img_soup.find("img")
                     if img_tag:
                         image_url = img_tag.get("src", "")
-                articles.append({"title": title, "summary": summary or "Clique sur Lire la suite pour voir l'article.", "source": feed_info["nom"], "date": entry.get("published", ""), "url": entry.get("link", ""), "image": image_url, "tags": tag_news(title, summary)})
+                entry_url = entry.get("link", "")
+                image_url = image_url or get_article_image(entry_url)
+                articles.append({"title": title, "summary": summary or "Clique sur Lire la suite pour voir l'article.", "source": feed_info["nom"], "date": entry.get("published", ""), "url": entry_url, "image": image_url, "tags": tag_news(title, summary)})
         except Exception as exc:
             app.logger.warning("Google News RSS '%s' échoué : %s", feed_info["nom"], exc)
     if len(articles) < 3:
@@ -352,11 +386,15 @@ def fetch_news():
                 title = entry.get("title", "")
                 summary = compact_text(entry.get("summary", ""))
                 if title and title not in seen_titles:
-                    articles.append({"title": title, "summary": summary, "source": "Pokémon Officiel FR", "date": entry.get("published", ""), "url": entry.get("link", ""), "image": "", "tags": tag_news(title, summary)})
+                    entry_url = entry.get("link", "")
+                    articles.append({"title": title, "summary": summary, "source": "Pokémon Officiel FR", "date": entry.get("published", ""), "url": entry_url, "image": get_article_image(entry_url), "tags": tag_news(title, summary)})
         except Exception as exc:
             app.logger.warning("RSS Pokémon officiel échoué : %s", exc)
     if not articles:
         articles = [{"title": "Connexion aux sources d'actualité impossible", "summary": "Les flux RSS ne sont pas accessibles. Vérifie ta connexion et clique sur Actualiser.", "source": "Hors ligne", "date": now_iso(), "url": "https://www.pokemon.com/fr/actus-pokemon", "image": "", "tags": ["🆕 Annonce"]}]
+    one_year_ago = datetime.now(timezone.utc) - timedelta(days=365)
+    articles = [a for a in articles if (parse_article_date(a["date"]) or datetime.now(timezone.utc)) > one_year_ago]
+    articles.sort(key=lambda a: parse_article_date(a["date"]) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     return articles[:12]
 
 
@@ -495,15 +533,15 @@ def api_search_product():
         return jsonify({"results": []})
     results = []
     try:
-        response = requests.get(
+        response = scraper.get(
             "https://api.pokemontcg.io/v2/sets",
-            params={"q": f'name:{query}*', "pageSize": 8},
-            headers=headers(),
+            params={"q": f'name:"{query}"', "pageSize": 8},
             timeout=8,
         )
         if response.ok:
             for entry in response.json().get("data", [])[:8]:
-                image = (entry.get("images") or {}).get("logo") or (entry.get("images") or {}).get("symbol") or PLACEHOLDER_IMAGE
+                images = entry.get("images") or {}
+                image = images.get("logo") or images.get("symbol") or PLACEHOLDER_IMAGE
                 results.append({
                     "nom": entry.get("name", query),
                     "image_url": image,
@@ -512,12 +550,33 @@ def api_search_product():
                 })
     except Exception:
         pass
+    # Si rien trouvé, recherche large
+    if not results:
+        try:
+            response = scraper.get(
+                "https://api.pokemontcg.io/v2/sets",
+                params={"q": f'name:{query}*', "pageSize": 6},
+                timeout=8,
+            )
+            if response.ok:
+                for entry in response.json().get("data", [])[:6]:
+                    images = entry.get("images") or {}
+                    image = images.get("logo") or images.get("symbol") or PLACEHOLDER_IMAGE
+                    results.append({
+                        "nom": entry.get("name", query),
+                        "image_url": image,
+                        "search_query": f"{entry.get('name', query)} pokemon scellé",
+                        "prix_estime": None,
+                    })
+        except Exception:
+            pass
+    # Fallback : retourne au moins le terme tapé
     if not results:
         results.append({
             "nom": query,
-            "image_url": get_product_image(query),
+            "image_url": PLACEHOLDER_IMAGE,
             "search_query": f"{query} pokemon scellé",
-            "prix_estime": get_ebay_market_price(query),
+            "prix_estime": None,
         })
     return jsonify({"results": results})
 
