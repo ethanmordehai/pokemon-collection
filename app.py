@@ -217,6 +217,16 @@ def parse_price(text):
     return price if 1 < price < 5000 else None
 
 
+def parse_euro_prices(text):
+    prices = []
+    clean = (text or "").replace("\xa0", " ")
+    for match in re.finditer(r"(\d+(?:[.,]\d{1,2})?)\s*€", clean):
+        price = float(match.group(1).replace(",", "."))
+        if 1 < price < 5000:
+            prices.append(price)
+    return prices
+
+
 def clean_price_query(search_query, remove_pokemon=False):
     pattern = r"pokemon scellé|scellé|neuf"
     if remove_pokemon:
@@ -409,6 +419,36 @@ def get_cardmarket_price(search_query):
             return round(min(prices), 2)
     except Exception as exc:
         app.logger.warning("Cardmarket erreur pour '%s': %s", query_clean, exc)
+    return None
+
+
+def get_cardmarket_url_price(url):
+    if not url or "cardmarket.com" not in url or "/Pokemon/" not in url:
+        return None
+    try:
+        response = scraper.get(url, timeout=14)
+        if response.status_code != 200:
+            return None
+        soup = BeautifulSoup(response.text, "html.parser")
+        prices = []
+        for selector in [
+            ".table-body",
+            ".table-body .col-offer",
+            ".table-body .col-price",
+            "div.col-offer",
+            "div.col-price",
+            ".price-container",
+            "dt:contains('De') + dd",
+            "dt:contains('Tendance des prix') + dd",
+        ]:
+            for tag in soup.select(selector):
+                prices.extend(parse_euro_prices(tag.get_text(" ", strip=True)))
+            if prices:
+                break
+        if prices:
+            return round(min(prices[:12]), 2)
+    except Exception as exc:
+        app.logger.warning("Cardmarket URL erreur pour '%s': %s", url, exc)
     return None
 
 
@@ -670,15 +710,26 @@ def update_item_price(item):
     source = ""
     source_url = ""
 
-    # Essai 1 : CardMarket API TCG via RapidAPI
+    # Essai 1 : source Cardmarket choisie manuellement
+    if item.get("price_source_url") and "cardmarket.com" in item.get("price_source_url", ""):
+        market_price = get_cardmarket_url_price(item["price_source_url"])
+        if sane_price_for_item(market_price, item):
+            source = item.get("price_source") or "Cardmarket"
+            source_url = item["price_source_url"]
+        else:
+            market_price = None
+    else:
+        market_price = None
+
+    # Essai 2 : CardMarket API TCG via RapidAPI
     api_entries = cardmarket_api_search_entries(search, limit=8)
     api_prices = [extract_cardmarket_api_price(entry) for entry in api_entries]
     api_prices = [price for price in api_prices if sane_price_for_item(price, item)]
-    market_price = round(statistics.median(api_prices[:6]), 2) if api_prices else None
+    market_price = market_price if market_price is not None else (round(statistics.median(api_prices[:6]), 2) if api_prices else None)
     if market_price is not None:
-        source = "CardMarket API TCG"
-        source_url = cardmarket_api_source_url(api_entries[0], search) if api_entries else cardmarket_source_url(search)
-    # Essai 2 : Cardmarket scraping
+        source = source or "CardMarket API TCG"
+        source_url = source_url or (cardmarket_api_source_url(api_entries[0], search) if api_entries else cardmarket_source_url(search))
+    # Essai 3 : Cardmarket scraping
     if market_price is None:
         market_price = get_cardmarket_price(search)
         if not sane_price_for_item(market_price, item):
@@ -686,7 +737,7 @@ def update_item_price(item):
     if market_price is not None:
         source = source or "Cardmarket"
         source_url = source_url or cardmarket_source_url(search)
-    # Essai 3 : PriceCharting
+    # Essai 4 : PriceCharting
     if market_price is None:
         market_price = get_pricecharting_price(search)
         if not sane_price_for_item(market_price, item):
@@ -694,7 +745,7 @@ def update_item_price(item):
         if market_price is not None:
             source = "PriceCharting"
             source_url = pricecharting_source_url(search)
-    # Essai 4 : eBay (si clé dispo)
+    # Essai 5 : eBay (si clé dispo)
     if market_price is None:
         market_price = get_ebay_market_price(search)
         if not sane_price_for_item(market_price, item):
@@ -877,7 +928,11 @@ def api_update_item(item_id):
         item = find_item(data, item_id)
         if not item:
             return jsonify({"error": "Item introuvable"}), 404
-        for key in ["categorie", "nom", "quantite", "prix_achete", "prix_marche", "image_url", "search_query"]:
+        for key in [
+            "categorie", "nom", "quantite", "prix_achete", "prix_marche",
+            "image_url", "search_query", "price_status", "price_source",
+            "price_source_url", "derniere_maj",
+        ]:
             if key in payload:
                 item[key] = payload[key]
         compute_item(item)

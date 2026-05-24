@@ -4,6 +4,7 @@ const state = {
   summary: {},
   collapsed: new Set(),
   filter: "ALL",
+  linkingItemId: null,
 };
 
 const categoryColors = {
@@ -171,7 +172,10 @@ function renderRow(item) {
       <td>${euro(item.val_marche_totale)}</td>
       <td>${variation === null || variation === undefined ? "—" : `<span class="variation-badge ${up ? "up" : "down"} ${hot ? "hot" : ""}">${up ? "▲" : "▼"} ${Math.abs(Number(variation)).toFixed(1)}%</span>`}</td>
       <td title="${escapeHtml(item.derniere_maj || "")}">${dateLabel(item.derniere_maj)}</td>
-      <td><button class="icon-btn" title="Supprimer" data-delete>🗑️</button></td>
+      <td>
+        <button class="icon-btn" title="Lier à un produit Cardmarket" data-link-source>🔗</button>
+        <button class="icon-btn" title="Supprimer" data-delete>🗑️</button>
+      </td>
     </tr>
   `;
 }
@@ -202,6 +206,14 @@ function bindTableActions() {
       if (!confirm(`Supprimer "${item.nom}" ?`)) return;
       await api.deleteItem(row.dataset.id);
       await loadCollection();
+    });
+  });
+
+  document.querySelectorAll("[data-link-source]").forEach(button => {
+    button.addEventListener("click", event => {
+      const id = event.target.closest("tr").dataset.id;
+      const item = state.items.find(entry => entry.id === id);
+      openLinkModal(item);
     });
   });
 
@@ -279,6 +291,12 @@ function bindModal() {
     const payload = Object.fromEntries(form.entries());
     payload.quantite = Number(payload.quantite);
     payload.prix_achete = Number(payload.prix_achete);
+    if (state.linkingItemId) {
+      await api.updateItem(state.linkingItemId, payload);
+      closeModal();
+      await loadCollection();
+      return;
+    }
     const added = await api.addItem(payload);
     closeModal();
     await api.updatePrice(added.item.id).catch(() => null);
@@ -287,6 +305,8 @@ function bindModal() {
 }
 
 function openModal() {
+  state.linkingItemId = null;
+  document.querySelector("#modalTitle").textContent = "Ajouter un item";
   collectionEls.modal.classList.remove("hidden");
   collectionEls.form.reset();
   collectionEls.form.quantite.value = 1;
@@ -297,8 +317,26 @@ function openModal() {
   collectionEls.searchInput.focus();
 }
 
+function openLinkModal(item) {
+  state.linkingItemId = item.id;
+  document.querySelector("#modalTitle").textContent = `Lier une source · ${item.nom}`;
+  collectionEls.modal.classList.remove("hidden");
+  collectionEls.form.reset();
+  collectionEls.form.nom.value = item.nom;
+  collectionEls.form.categorie.value = item.categorie;
+  collectionEls.form.quantite.value = item.quantite || 1;
+  collectionEls.form.prix_achete.value = item.prix_achete || 0;
+  collectionEls.form.search_query.value = item.search_query || item.nom;
+  collectionEls.form.image_url.value = item.image_url || "/static/images/pokeball.svg";
+  collectionEls.preview.src = item.image_url || "/static/images/pokeball.svg";
+  collectionEls.searchInput.value = item.search_query || item.nom;
+  collectionEls.searchResults.innerHTML = "";
+  collectionEls.searchInput.focus();
+}
+
 function closeModal() {
   collectionEls.modal.classList.add("hidden");
+  state.linkingItemId = null;
 }
 
 async function searchProducts() {
@@ -310,7 +348,7 @@ async function searchProducts() {
     <button type="button" class="result-card" data-result='${escapeHtml(JSON.stringify(result))}'>
       <img src="${escapeHtml(result.image_url || "/static/images/pokeball.svg")}" alt="">
       <strong>${escapeHtml(result.nom)}</strong>
-      <small>${result.prix_estime ? euro(result.prix_estime) : "Prix à estimer"}</small>
+      <small>${result.prix_estime ? euro(result.prix_estime) : "Prix à estimer"}${result.price_source ? ` · ${escapeHtml(result.price_source)}` : ""}</small>
     </button>
   `).join("");
   document.querySelectorAll("[data-result]").forEach(card => {
@@ -319,10 +357,34 @@ async function searchProducts() {
 }
 
 function selectResult(result) {
+  if (state.linkingItemId) {
+    applyLinkedSource(result);
+    return;
+  }
   collectionEls.form.nom.value = result.nom;
   collectionEls.form.search_query.value = result.search_query || result.nom;
   collectionEls.form.image_url.value = result.image_url || "/static/images/pokeball.svg";
   collectionEls.preview.src = result.image_url || "/static/images/pokeball.svg";
+}
+
+async function applyLinkedSource(result) {
+  const item = state.items.find(entry => entry.id === state.linkingItemId);
+  if (!item) return;
+  const payload = {
+    search_query: result.search_query || result.nom,
+    image_url: result.image_url || item.image_url || "/static/images/pokeball.svg",
+    price_source: result.price_source || "CardMarket API TCG",
+    price_source_url: result.price_source_url || "",
+  };
+  if (result.prix_estime !== null && result.prix_estime !== undefined) {
+    payload.prix_marche = Number(result.prix_estime);
+    payload.price_status = "ok";
+    payload.derniere_maj = new Date().toISOString().slice(0, 19);
+  }
+  await api.updateItem(item.id, payload);
+  await api.updatePrice(item.id).catch(() => null);
+  closeModal();
+  await loadCollection();
 }
 
 function openLightbox(src) {
