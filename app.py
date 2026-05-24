@@ -30,6 +30,8 @@ scraper.headers.update({"Referer": "https://www.google.fr/", "Accept": "text/htm
 BASE_DIR = Path(__file__).resolve().parent
 DATA_FILE = BASE_DIR / "collection.json"
 EBAY_APP_ID = os.environ.get("EBAY_APP_ID", "")
+POKEWALLET_API_KEY = os.environ.get("POKEWALLET_API_KEY", "")
+POKEWALLET_BASE_URL = "https://api.pokewallet.io"
 
 CATEGORIES = [
     "ETB/BUNDLE",
@@ -347,6 +349,69 @@ def get_pricecharting_price(search_query):
     return None
 
 
+def pokewallet_headers():
+    if not POKEWALLET_API_KEY:
+        return {}
+    return {"X-API-Key": POKEWALLET_API_KEY}
+
+
+def extract_pokewallet_price(entry):
+    cardmarket = entry.get("cardmarket") or {}
+    for price in cardmarket.get("prices", []) or []:
+        for key in ["trend", "avg", "avg7", "avg30", "low"]:
+            value = price.get(key)
+            if isinstance(value, (int, float)) and 1 < value < 5000:
+                return round(float(value), 2)
+    tcgplayer = entry.get("tcgplayer") or {}
+    for price in tcgplayer.get("prices", []) or []:
+        for key in ["market_price", "mid_price", "low_price"]:
+            value = price.get(key)
+            if isinstance(value, (int, float)) and 1 < value < 5000:
+                return round(float(value), 2)
+    return None
+
+
+def pokewallet_source_url(entry):
+    cardmarket = entry.get("cardmarket") or {}
+    if cardmarket.get("product_url"):
+        return cardmarket["product_url"]
+    tcgplayer = entry.get("tcgplayer") or {}
+    return tcgplayer.get("url", "")
+
+
+def search_pokewallet(query, limit=8):
+    if not POKEWALLET_API_KEY:
+        return []
+    try:
+        response = requests.get(
+            f"{POKEWALLET_BASE_URL}/search",
+            params={"q": query, "limit": limit},
+            headers=pokewallet_headers(),
+            timeout=8,
+        )
+        if not response.ok:
+            app.logger.warning("PokéWallet search failed: %s", response.status_code)
+            return []
+        results = []
+        for entry in response.json().get("results", [])[:limit]:
+            card_info = entry.get("card_info") or {}
+            name = card_info.get("name") or card_info.get("clean_name") or query
+            card_id = entry.get("id", "")
+            image_url = f"/api/pokewallet/image/{quote_plus(card_id)}" if card_id else PLACEHOLDER_IMAGE
+            results.append({
+                "nom": name,
+                "image_url": image_url,
+                "search_query": f"{name} pokemon",
+                "prix_estime": extract_pokewallet_price(entry),
+                "price_source": "PokéWallet",
+                "price_source_url": pokewallet_source_url(entry),
+            })
+        return results
+    except Exception as exc:
+        app.logger.warning("PokéWallet erreur pour '%s': %s", query, exc)
+    return []
+
+
 def update_item_price(item):
     search = item.get("search_query") or item.get("nom", "")
     timestamp = now_iso()
@@ -632,11 +697,34 @@ def api_price_stream():
     return Response(stream(), mimetype="text/event-stream")
 
 
+@app.get("/api/pokewallet/image/<card_id>")
+def api_pokewallet_image(card_id):
+    if not POKEWALLET_API_KEY:
+        return Response(status=404)
+    try:
+        response = requests.get(
+            f"{POKEWALLET_BASE_URL}/images/{card_id}",
+            params={"size": request.args.get("size", "low")},
+            headers=pokewallet_headers(),
+            timeout=10,
+        )
+        if not response.ok:
+            return Response(status=response.status_code)
+        return Response(response.content, mimetype=response.headers.get("Content-Type", "image/jpeg"))
+    except Exception as exc:
+        app.logger.warning("PokéWallet image erreur '%s': %s", card_id, exc)
+        return Response(status=404)
+
+
 @app.get("/api/search_product")
 def api_search_product():
     query = request.args.get("q", "").strip()
     if not query:
         return jsonify({"results": []})
+    results = search_pokewallet(query)
+    if results:
+        return jsonify({"results": results})
+
     results = []
     try:
         response = scraper.get(
