@@ -10,3 +10,5 @@ services:
         value: 3.11.0
       - key: POKEWALLET_API_KEY
         sync: false
+      - key: CARDMARKET_API_KEY
+        sync: false

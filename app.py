@@ -32,6 +32,12 @@ DATA_FILE = BASE_DIR / "collection.json"
 EBAY_APP_ID = os.environ.get("EBAY_APP_ID", "")
 POKEWALLET_API_KEY = os.environ.get("POKEWALLET_API_KEY", "")
 POKEWALLET_BASE_URL = "https://api.pokewallet.io"
+CARDMARKET_API_KEY = (
+    os.environ.get("CARDMARKET_API_KEY")
+    or os.environ.get("RAPIDAPI_KEY")
+    or os.environ.get("POKEWALLET_API_KEY", "")
+)
+CARDMARKET_API_BASE_URL = "https://cardmarket-api-tcg.p.rapidapi.com"
 
 CATEGORIES = [
     "ETB/BUNDLE",
@@ -349,6 +355,127 @@ def get_pricecharting_price(search_query):
     return None
 
 
+def cardmarket_api_headers():
+    if not CARDMARKET_API_KEY:
+        return {}
+    return {
+        "x-rapidapi-key": CARDMARKET_API_KEY,
+        "x-rapidapi-host": "cardmarket-api-tcg.p.rapidapi.com",
+    }
+
+
+def cardmarket_api_get(path, params=None):
+    if not CARDMARKET_API_KEY:
+        return None
+    query_params = dict(params or {})
+    query_params.setdefault("rapidapi-key", CARDMARKET_API_KEY)
+    try:
+        response = requests.get(
+            f"{CARDMARKET_API_BASE_URL}{path}",
+            params=query_params,
+            headers=cardmarket_api_headers(),
+            timeout=10,
+        )
+        if not response.ok:
+            app.logger.warning("CardMarket API failed %s: %s", path, response.status_code)
+            return None
+        return response.json()
+    except Exception as exc:
+        app.logger.warning("CardMarket API erreur %s: %s", path, exc)
+        return None
+
+
+def iter_api_entries(payload):
+    if not payload:
+        return []
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in ["data", "results", "cards", "products", "items"]:
+            value = payload.get(key)
+            if isinstance(value, list):
+                return value
+        return [payload]
+    return []
+
+
+def numeric_price(value):
+    if isinstance(value, (int, float)) and 1 < value < 5000:
+        return float(value)
+    if isinstance(value, str):
+        return parse_price(value)
+    return None
+
+
+def extract_cardmarket_api_price(entry):
+    prices = entry.get("prices") if isinstance(entry, dict) else None
+    candidates = []
+    if isinstance(prices, dict):
+        cardmarket = prices.get("cardmarket")
+        if isinstance(cardmarket, dict):
+            for key in [
+                "market_price", "mid_price", "avg",
+                "30d_average", "7d_average",
+                "lowest_near_mint", "lowest_near_mint_ES",
+                "lowest_near_mint_FR", "lowest_near_mint_IT",
+            ]:
+                price = numeric_price(cardmarket.get(key))
+                if price:
+                    candidates.append(price)
+        tcgplayer = prices.get("tcg_player") or prices.get("tcgplayer")
+        if isinstance(tcgplayer, dict):
+            for key in ["market_price", "mid_price", "low_price"]:
+                price = numeric_price(tcgplayer.get(key))
+                if price:
+                    candidates.append(price)
+    for key in ["price", "market_price", "mid_price", "avg_price", "average_price"]:
+        price = numeric_price(entry.get(key))
+        if price:
+            candidates.append(price)
+    return round(statistics.median(candidates[:6]), 2) if candidates else None
+
+
+def cardmarket_api_source_url(entry, search_query):
+    for key in ["url", "cardmarket_url", "product_url", "link"]:
+        value = entry.get(key)
+        if isinstance(value, str) and value.startswith("http"):
+            return value
+    return cardmarket_source_url(search_query)
+
+
+def cardmarket_api_search_entries(search_query, limit=8):
+    query_clean = clean_price_query(search_query, remove_pokemon=True) or search_query
+    endpoints = [
+        ("/pokemon/products", {"search": query_clean, "sort": "price_highest"}),
+        ("/pokemon/products/search", {"search": query_clean, "sort": "price_highest"}),
+        ("/pokemon/cards", {"search": query_clean, "sort": "price_highest"}),
+    ]
+    results = []
+    seen = set()
+    for path, params in endpoints:
+        payload = cardmarket_api_get(path, params)
+        for entry in iter_api_entries(payload):
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name") or entry.get("name_numbered") or entry.get("title") or query_clean
+            identity = f"{path}:{name}"
+            if identity in seen:
+                continue
+            seen.add(identity)
+            entry["_api_path"] = path
+            results.append(entry)
+            if len(results) >= limit:
+                return results
+    return results
+
+
+def get_cardmarket_api_price(search_query):
+    entries = cardmarket_api_search_entries(search_query, limit=8)
+    prices = [extract_cardmarket_api_price(entry) for entry in entries]
+    prices = [price for price in prices if price is not None]
+    return round(statistics.median(prices[:6]), 2) if prices else None
+
+
 def pokewallet_headers():
     if not POKEWALLET_API_KEY:
         return {}
@@ -412,6 +539,23 @@ def search_pokewallet(query, limit=8):
     return []
 
 
+def search_cardmarket_api(query, limit=8):
+    results = []
+    for entry in cardmarket_api_search_entries(query, limit=limit):
+        name = entry.get("name") or entry.get("name_numbered") or entry.get("title") or query
+        image = entry.get("image") or entry.get("image_url") or entry.get("thumbnail") or PLACEHOLDER_IMAGE
+        price = extract_cardmarket_api_price(entry)
+        results.append({
+            "nom": name,
+            "image_url": image,
+            "search_query": f"{name} pokemon",
+            "prix_estime": price,
+            "price_source": "CardMarket API TCG",
+            "price_source_url": cardmarket_api_source_url(entry, query),
+        })
+    return results
+
+
 def update_item_price(item):
     search = item.get("search_query") or item.get("nom", "")
     timestamp = now_iso()
@@ -421,18 +565,27 @@ def update_item_price(item):
     source = ""
     source_url = ""
 
-    # Essai 1 : Cardmarket
-    market_price = get_cardmarket_price(search)
+    # Essai 1 : CardMarket API TCG via RapidAPI
+    api_entries = cardmarket_api_search_entries(search, limit=8)
+    api_prices = [extract_cardmarket_api_price(entry) for entry in api_entries]
+    api_prices = [price for price in api_prices if price is not None]
+    market_price = round(statistics.median(api_prices[:6]), 2) if api_prices else None
     if market_price is not None:
-        source = "Cardmarket"
-        source_url = cardmarket_source_url(search)
-    # Essai 2 : PriceCharting
+        source = "CardMarket API TCG"
+        source_url = cardmarket_api_source_url(api_entries[0], search) if api_entries else cardmarket_source_url(search)
+    # Essai 2 : Cardmarket scraping
+    if market_price is None:
+        market_price = get_cardmarket_price(search)
+    if market_price is not None:
+        source = source or "Cardmarket"
+        source_url = source_url or cardmarket_source_url(search)
+    # Essai 3 : PriceCharting
     if market_price is None:
         market_price = get_pricecharting_price(search)
         if market_price is not None:
             source = "PriceCharting"
             source_url = pricecharting_source_url(search)
-    # Essai 3 : eBay (si clé dispo)
+    # Essai 4 : eBay (si clé dispo)
     if market_price is None:
         market_price = get_ebay_market_price(search)
         if market_price is not None:
@@ -721,6 +874,10 @@ def api_search_product():
     query = request.args.get("q", "").strip()
     if not query:
         return jsonify({"results": []})
+    results = search_cardmarket_api(query)
+    if results:
+        return jsonify({"results": results})
+
     results = search_pokewallet(query)
     if results:
         return jsonify({"results": results})
