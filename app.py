@@ -231,13 +231,119 @@ def ebay_source_url(search_query):
 
 
 def cardmarket_source_url(search_query):
-    query_clean = clean_price_query(search_query, remove_pokemon=True)
-    return f"https://www.cardmarket.com/fr/Pokemon/Products/Search?searchString={quote_plus(query_clean)}&idCategory=18"
+    return cardmarket_product_search_url(search_query)
 
 
 def pricecharting_source_url(search_query):
     query_clean = clean_price_query(search_query)
     return f"https://www.pricecharting.com/search-products?q={quote_plus(query_clean + ' pokemon')}&type=prices"
+
+
+SET_ALIASES = {
+    "equilibre parfait": "Perfect Order",
+    "équilibre parfait": "Perfect Order",
+    "foudre noire": "Black Bolt",
+    "flamme blanche": "White Flare",
+    "fable nebuleuse": "Shrouded Fable",
+    "fable nébuleuse": "Shrouded Fable",
+    "mascarade crepusculaire": "Twilight Masquerade",
+    "mascarade crépusculaire": "Twilight Masquerade",
+    "faille paradoxe": "Paradox Rift",
+    "aventures ensemble": "Journey Together",
+    "etincelles deferlantes": "Surging Sparks",
+    "étincelles déferlantes": "Surging Sparks",
+    "destinees de paldea": "Paldean Fates",
+    "destinées de paldea": "Paldean Fates",
+    "evolutions prismatiques": "Prismatic Evolutions",
+    "évolutions prismatiques": "Prismatic Evolutions",
+}
+
+
+def normalize_search_text(text):
+    normalized = (text or "").lower()
+    replacements = {
+        "à": "a", "á": "a", "â": "a", "ä": "a",
+        "è": "e", "é": "e", "ê": "e", "ë": "e",
+        "ì": "i", "í": "i", "î": "i", "ï": "i",
+        "ò": "o", "ó": "o", "ô": "o", "ö": "o",
+        "ù": "u", "ú": "u", "û": "u", "ü": "u",
+        "ç": "c",
+    }
+    for src, dst in replacements.items():
+        normalized = normalized.replace(src, dst)
+    return re.sub(r"[^a-z0-9]+", " ", normalized).strip()
+
+
+def search_tokens(text):
+    stopwords = {
+        "pokemon", "scelle", "scellee", "neuf", "neuve", "etb", "bundle",
+        "coffret", "collection", "speciale", "special", "elite", "trainer",
+        "box", "ev", "me", "eb", "carton", "plastique", "sorti", "sortie",
+        "display", "booster", "tripack", "duopack", "tin", "tins",
+    }
+    return {token for token in normalize_search_text(text).split() if len(token) > 2 and token not in stopwords}
+
+
+def translated_query(search_query):
+    normalized = normalize_search_text(search_query)
+    for french, english in SET_ALIASES.items():
+        if normalize_search_text(french) in normalized:
+            return english
+    return ""
+
+
+def cardmarket_product_search_url(search_query):
+    query = translated_query(search_query) or clean_price_query(search_query, remove_pokemon=True)
+    return f"https://www.cardmarket.com/fr/Pokemon/Products/Search?searchString={quote_plus(query)}"
+
+
+def exact_cardmarket_product_url(search_query):
+    translated = translated_query(search_query)
+    if "Perfect Order" in translated and "etb" in normalize_search_text(search_query):
+        return "https://www.cardmarket.com/fr/Pokemon/Products/Elite-Trainer-Boxes/Perfect-Order-Elite-Trainer-Box?sellerCountry=12&language=2"
+    return cardmarket_product_search_url(search_query)
+
+
+def build_cardmarket_queries(search_query):
+    query_clean = clean_price_query(search_query, remove_pokemon=True)
+    normalized = normalize_search_text(search_query)
+    queries = []
+    translated = translated_query(search_query)
+    if translated:
+        if "etb" in normalized:
+            queries.append(f"{translated} Elite Trainer Box")
+        queries.append(translated)
+    queries.append(query_clean)
+    if "etb" in normalized:
+        queries.append(query_clean.replace("ETB", "").replace("etb", "").strip())
+        queries.append(f"{query_clean} Elite Trainer Box")
+    unique = []
+    for query in queries:
+        query = re.sub(r"\([^)]*\)", "", query).strip()
+        if query and query not in unique:
+            unique.append(query)
+    return unique
+
+
+def entry_matches_query(entry, search_query):
+    name = entry.get("name") or entry.get("name_numbered") or entry.get("title") or ""
+    source_tokens = search_tokens(search_query)
+    name_tokens = search_tokens(name)
+    translated = translated_query(search_query)
+    if translated and normalize_search_text(translated) in normalize_search_text(name):
+        return True
+    if not source_tokens:
+        return True
+    return len(source_tokens & name_tokens) >= min(2, len(source_tokens))
+
+
+def sane_price_for_item(price, item):
+    if price is None:
+        return False
+    paid = float(item.get("prix_achete") or 0)
+    if paid > 0 and price > max(paid * 4, paid + 180):
+        return False
+    return 1 < price < 5000
 
 
 def get_ebay_market_price(search_query):
@@ -438,34 +544,33 @@ def extract_cardmarket_api_price(entry):
 def cardmarket_api_source_url(entry, search_query):
     for key in ["url", "cardmarket_url", "product_url", "link"]:
         value = entry.get(key)
-        if isinstance(value, str) and value.startswith("http"):
+        if isinstance(value, str) and value.startswith("http") and "/Pokemon/" in value:
             return value
-    return cardmarket_source_url(search_query)
+    return exact_cardmarket_product_url(search_query)
 
 
 def cardmarket_api_search_entries(search_query, limit=8):
-    query_clean = clean_price_query(search_query, remove_pokemon=True) or search_query
-    endpoints = [
-        ("/pokemon/products", {"search": query_clean, "sort": "price_highest"}),
-        ("/pokemon/products/search", {"search": query_clean, "sort": "price_highest"}),
-        ("/pokemon/cards", {"search": query_clean, "sort": "price_highest"}),
-    ]
     results = []
     seen = set()
-    for path, params in endpoints:
-        payload = cardmarket_api_get(path, params)
-        for entry in iter_api_entries(payload):
-            if not isinstance(entry, dict):
-                continue
-            name = entry.get("name") or entry.get("name_numbered") or entry.get("title") or query_clean
-            identity = f"{path}:{name}"
-            if identity in seen:
-                continue
-            seen.add(identity)
-            entry["_api_path"] = path
-            results.append(entry)
-            if len(results) >= limit:
-                return results
+    for query in build_cardmarket_queries(search_query):
+        endpoints = [
+            ("/pokemon/products", {"search": query, "sort": "price_lowest"}),
+            ("/pokemon/products/search", {"search": query, "sort": "price_lowest"}),
+        ]
+        for path, params in endpoints:
+            payload = cardmarket_api_get(path, params)
+            for entry in iter_api_entries(payload):
+                if not isinstance(entry, dict) or not entry_matches_query(entry, search_query):
+                    continue
+                name = entry.get("name") or entry.get("name_numbered") or entry.get("title") or query
+                identity = f"{path}:{name}"
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                entry["_api_path"] = path
+                results.append(entry)
+                if len(results) >= limit:
+                    return results
     return results
 
 
@@ -568,7 +673,7 @@ def update_item_price(item):
     # Essai 1 : CardMarket API TCG via RapidAPI
     api_entries = cardmarket_api_search_entries(search, limit=8)
     api_prices = [extract_cardmarket_api_price(entry) for entry in api_entries]
-    api_prices = [price for price in api_prices if price is not None]
+    api_prices = [price for price in api_prices if sane_price_for_item(price, item)]
     market_price = round(statistics.median(api_prices[:6]), 2) if api_prices else None
     if market_price is not None:
         source = "CardMarket API TCG"
@@ -576,18 +681,24 @@ def update_item_price(item):
     # Essai 2 : Cardmarket scraping
     if market_price is None:
         market_price = get_cardmarket_price(search)
+        if not sane_price_for_item(market_price, item):
+            market_price = None
     if market_price is not None:
         source = source or "Cardmarket"
         source_url = source_url or cardmarket_source_url(search)
     # Essai 3 : PriceCharting
     if market_price is None:
         market_price = get_pricecharting_price(search)
+        if not sane_price_for_item(market_price, item):
+            market_price = None
         if market_price is not None:
             source = "PriceCharting"
             source_url = pricecharting_source_url(search)
     # Essai 4 : eBay (si clé dispo)
     if market_price is None:
         market_price = get_ebay_market_price(search)
+        if not sane_price_for_item(market_price, item):
+            market_price = None
         if market_price is not None:
             source = "eBay"
             source_url = ebay_source_url(search)
@@ -600,12 +711,13 @@ def update_item_price(item):
         item["price_source_url"] = source_url
     else:
         # IMPORTANT : conserver l'ancien prix au lieu de mettre 0
-        if ancien_prix is not None:
+        if sane_price_for_item(ancien_prix, item):
             item["prix_marche"] = ancien_prix
             item["price_status"] = "cached"
             item["price_source"] = ancienne_source
             item["price_source_url"] = ancienne_source_url
         else:
+            item["prix_marche"] = None
             item["price_status"] = "failed"
             item["price_source"] = ""
             item["price_source_url"] = ""
