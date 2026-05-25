@@ -1,18 +1,25 @@
 const state = {
   items: [],
+  categories: [],
   summary: {},
-  searchResults: [],
-  selectedProduct: null,
-  category: "",
+  filter: "ALL",
+  addCategory: "",
 };
 
-const filters = ["", "ETB", "Booster", "Display", "Bundle", "Coffret", "Tin", "Blister", "Produit"];
+const categoryColors = {
+  "ETB/BUNDLE": "#2f6bff",
+  "COFFRET": "#b12cff",
+  "TINS": "#00d084",
+  "POKEBOX": "#ff2fa8",
+  "TRIPACK/DUOPACK": "#ff8a2a",
+  "BOOSTER À L'UNITÉ/ARTSET": "#8ea0ff",
+};
 
 document.addEventListener("DOMContentLoaded", () => {
   bindNavigation();
-  buildV2Shell();
-  bindV2Events();
-  loadPortfolio();
+  buildManualCollection();
+  bindStaticEvents();
+  loadCollection();
   if (location.pathname === "/marche") switchView("marche");
 });
 
@@ -30,73 +37,83 @@ function switchView(view) {
   if (view === "marche") loadMarket();
 }
 
-function buildV2Shell() {
+function buildManualCollection() {
   document.querySelector("#collectionView").innerHTML = `
-    <section class="v2-dashboard">
-      <div class="stats-grid">
-        <article class="stat-card"><span class="stat-value" id="statItems">0</span><span class="stat-label">Items portefeuille</span></article>
-        <article class="stat-card"><span class="stat-value" id="statCost">0,00 €</span><span class="stat-label">Coût achat</span></article>
-        <article class="stat-card"><span class="stat-value" id="statMarket">0,00 €</span><span class="stat-label">Valeur marché</span></article>
-        <article class="stat-card"><span class="stat-value" id="statPnl">0,00 €</span><span class="stat-label" id="statPnlPct">PnL 0%</span></article>
+    <section class="manual-hero">
+      <div>
+        <h1>PokéCollect</h1>
+        <p>Portefeuille Pokémon scellé manuel, propre, rapide, avec liens CardMarket et PnL visible.</p>
       </div>
-
-      <div class="v2-search-panel">
-        <div class="v2-search-row">
-          <input id="v2SearchInput" type="search" placeholder="Rechercher sur CardMarket : Perfect Order, Black Bolt, ETB...">
-          <button class="primary-action" id="v2SearchBtn">Rechercher</button>
-          <button class="ghost-action" id="v2RefreshAllBtn">Mettre à jour le portefeuille</button>
-        </div>
-        <div class="filter-pills" id="v2Filters"></div>
-      </div>
-
-      <div class="v2-main-grid">
-        <section>
-          <div class="section-heading"><h1>Résultats CardMarket</h1><span id="resultCount" class="muted"></span></div>
-          <div id="v2Results" class="product-grid"></div>
-        </section>
-        <aside id="productDetail" class="product-detail empty-detail">
-          <h2>Sélectionne un produit</h2>
-          <p>Choisis le bon item CardMarket, vérifie le prix et ajoute-le à ton portefeuille.</p>
-        </aside>
-      </div>
-
-      <section class="portfolio-section">
-        <div class="section-heading">
-          <h1>Mon portefeuille</h1>
-          <a class="ghost-action export-link" href="/api/export/csv">Export CSV</a>
-        </div>
-        <div id="portfolioGrid" class="portfolio-grid"></div>
-      </section>
+      <div class="hero-orbit" aria-hidden="true"></div>
     </section>
+
+    <div class="stats-grid neon-stats">
+      <article class="stat-card"><span class="stat-value" id="statItems">0</span><span class="stat-label">Items total</span></article>
+      <article class="stat-card"><span class="stat-value" id="statCost">0,00 €</span><span class="stat-label">Prix acheté total</span></article>
+      <article class="stat-card"><span class="stat-value" id="statMarket">0,00 €</span><span class="stat-label">Prix marché total</span></article>
+      <article class="stat-card"><span class="stat-value" id="statPnl">0,00 €</span><span class="stat-label" id="statPnlPct">PnL 0%</span></article>
+    </div>
+
+    <div class="manual-toolbar">
+      <label class="select-wrap">
+        <span>Filtrer</span>
+        <select id="manualCategoryFilter"><option value="ALL">Toutes les catégories</option></select>
+      </label>
+      <button class="ghost-action" id="manualExportBtn">Export CSV</button>
+    </div>
+
+    <div id="manualTables" class="manual-tables"></div>
+
+    <div class="modal-backdrop hidden" id="manualModal" role="dialog" aria-modal="true">
+      <form class="manual-modal" id="manualForm">
+        <button class="icon-close" type="button" id="manualCloseBtn" aria-label="Fermer">×</button>
+        <h2 id="manualModalTitle">Ajouter un item</h2>
+        <label>Nom de l'item<input name="nom" required placeholder="ETB Chaos Ascendant"></label>
+        <div class="modal-grid-2">
+          <label>Quantité<input name="quantite" type="number" min="1" value="1" required></label>
+          <label>Prix acheté (€)<input name="prix_achete" type="number" min="0" step="0.01" value="0" required></label>
+        </div>
+        <div class="modal-grid-2">
+          <label>Prix marché (€)<input name="prix_marche" type="number" min="0" step="0.01" value="0"></label>
+          <label>Catégorie<select name="categorie" required></select></label>
+        </div>
+        <label>Lien CardMarket<input name="price_source_url" type="url" placeholder="https://www.cardmarket.com/fr/Pokemon/..."></label>
+        <button class="primary-action form-submit" type="submit">Ajouter au tableau</button>
+      </form>
+    </div>
   `;
-
-  document.querySelector("#v2Filters").innerHTML = filters.map(filter => `
-    <button class="filter-pill ${filter === "" ? "active" : ""}" data-filter="${escapeHtml(filter)}">${filter || "Tout"}</button>
-  `).join("");
 }
 
-function bindV2Events() {
-  document.querySelector("#v2SearchBtn").addEventListener("click", runSearch);
-  document.querySelector("#v2SearchInput").addEventListener("keydown", event => {
-    if (event.key === "Enter") runSearch();
+function bindStaticEvents() {
+  document.querySelector("#manualCategoryFilter").addEventListener("change", event => {
+    state.filter = event.target.value;
+    renderTables();
   });
-  document.querySelector("#v2RefreshAllBtn").addEventListener("click", refreshPortfolio);
-  document.querySelectorAll("[data-filter]").forEach(button => {
-    button.addEventListener("click", () => {
-      state.category = button.dataset.filter;
-      document.querySelectorAll("[data-filter]").forEach(pill => pill.classList.toggle("active", pill === button));
-      if (document.querySelector("#v2SearchInput").value.trim()) runSearch();
-    });
+  document.querySelector("#manualExportBtn").addEventListener("click", () => {
+    window.location.href = "/api/export/csv";
   });
+  document.querySelector("#manualCloseBtn").addEventListener("click", closeManualModal);
+  document.querySelector("#manualModal").addEventListener("click", event => {
+    if (event.target.id === "manualModal") closeManualModal();
+  });
+  document.querySelector("#manualForm").addEventListener("submit", submitManualItem);
 }
 
-async function loadPortfolio() {
+async function loadCollection() {
   const payload = await api.collection();
   state.items = payload.collection.items;
+  state.categories = payload.categories;
   state.summary = payload.summary;
+  renderOptions();
   renderStats();
-  renderPortfolio();
-  document.querySelector("#lastSync").textContent = `Dernière MAJ : ${dateLabel(payload.collection.last_updated)}`;
+  renderTables();
+  document.querySelector("#lastSync").textContent = `Dernière sauvegarde : ${dateLabel(payload.collection.last_updated)}`;
+}
+
+function renderOptions() {
+  const options = state.categories.map(category => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`).join("");
+  document.querySelector("#manualCategoryFilter").innerHTML = `<option value="ALL">Toutes les catégories</option>${options}`;
+  document.querySelector('#manualForm [name="categorie"]').innerHTML = options;
 }
 
 function renderStats() {
@@ -111,188 +128,164 @@ function renderStats() {
   document.querySelector("#statPnlPct").textContent = `PnL ${Number(state.summary.pnl_pct || 0).toFixed(1)}%`;
 }
 
-async function runSearch() {
-  const query = document.querySelector("#v2SearchInput").value.trim();
-  if (!query) return;
-  const resultsEl = document.querySelector("#v2Results");
-  resultsEl.innerHTML = `<div class="loading-card">Recherche CardMarket...</div>`;
-  document.querySelector("#resultCount").textContent = "";
-  const payload = await api.searchProduct(query, state.category);
-  state.searchResults = payload.results || [];
-  document.querySelector("#resultCount").textContent = `${state.searchResults.length} résultat(s)`;
-  renderResults();
+function renderTables() {
+  const categories = state.filter === "ALL" ? state.categories : [state.filter];
+  document.querySelector("#manualTables").innerHTML = categories.map(renderCategoryTable).join("");
+  bindTableEvents();
 }
 
-function renderResults() {
-  const resultsEl = document.querySelector("#v2Results");
-  if (!state.searchResults.length) {
-    resultsEl.innerHTML = `<div class="loading-card">Aucun résultat. Essaie le nom anglais du set ou une recherche plus courte.</div>`;
-    return;
-  }
-  resultsEl.innerHTML = state.searchResults.map((product, index) => `
-    <button class="product-card" data-product-index="${index}">
-      <img src="${escapeHtml(product.image_url || "/static/images/pokeball.svg")}" alt="">
-      <span class="product-category">${escapeHtml(product.categorie || "Produit")}</span>
-      <strong>${escapeHtml(product.nom)}</strong>
-      <span>${product.prix_estime ? `À partir de ${euro(product.prix_estime)}` : "Prix indisponible"}</span>
-    </button>
-  `).join("");
-  document.querySelectorAll("[data-product-index]").forEach(card => {
-    card.addEventListener("click", () => selectProduct(Number(card.dataset.productIndex)));
-  });
-}
-
-function selectProduct(index) {
-  state.selectedProduct = state.searchResults[index];
-  renderProductDetail();
-}
-
-function renderProductDetail() {
-  const product = state.selectedProduct;
-  const detail = document.querySelector("#productDetail");
-  if (!product) return;
-  detail.classList.remove("empty-detail");
-  detail.innerHTML = `
-    <div class="detail-media">
-      <img src="${escapeHtml(product.image_url || "/static/images/pokeball.svg")}" alt="${escapeHtml(product.nom)}">
-    </div>
-    <div class="detail-body">
-      <span class="product-category">${escapeHtml(product.categorie || "Produit")}</span>
-      <h2>${escapeHtml(product.nom)}</h2>
-      <div class="detail-price">${product.prix_estime ? euro(product.prix_estime) : "Prix indisponible"}</div>
-      <canvas id="priceChart" width="520" height="220"></canvas>
-      <div class="detail-meta">
-        <span>Source : ${escapeHtml(product.price_source || "CardMarket")}</span>
-        ${product.price_source_url ? `<a href="${escapeHtml(product.price_source_url)}" target="_blank" rel="noreferrer">Ouvrir CardMarket</a>` : ""}
+function renderCategoryTable(category) {
+  const items = state.items.filter(item => item.categorie === category);
+  const color = categoryColors[category] || "#ffd700";
+  const totalBuy = items.reduce((sum, item) => sum + Number(item.prix_achete || 0) * Number(item.quantite || 0), 0);
+  const totalMarket = items.reduce((sum, item) => sum + Number(item.prix_marche || 0) * Number(item.quantite || 0), 0);
+  const pnl = totalMarket - totalBuy;
+  return `
+    <section class="manual-category" style="--category-color:${color}">
+      <header class="manual-category-head">
+        <h2>${escapeHtml(category)}</h2>
+        <div>${items.length} lignes · Achat ${euro(totalBuy)} · Marché ${euro(totalMarket)} · <strong class="${pnl >= 0 ? "positive" : "negative"}">${euro(pnl)}</strong></div>
+      </header>
+      <div class="manual-table-wrap">
+        <table class="manual-table">
+          <thead>
+            <tr>
+              <th>Nom</th>
+              <th>Qté</th>
+              <th>Prix acheté</th>
+              <th>Prix marché</th>
+              <th>Total marché</th>
+              <th>PnL</th>
+              <th>Lien</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${items.map(renderItemRow).join("") || `<tr><td colspan="8" class="empty-row">Aucun item dans cette catégorie.</td></tr>`}
+            <tr class="manual-add-row">
+              <td colspan="8"><button class="add-line-btn" data-add-category="${escapeHtml(category)}">+ Ajouter dans ${escapeHtml(category)}</button></td>
+            </tr>
+          </tbody>
+        </table>
       </div>
-      <div class="add-form">
-        <label>Quantité<input id="addQty" type="number" min="1" value="1"></label>
-        <label>Prix acheté (€)<input id="addBuyPrice" type="number" min="0" step="0.01" value="${product.prix_estime || 0}"></label>
-        <button class="primary-action" id="addToPortfolioBtn">Ajouter au portefeuille</button>
-      </div>
-    </div>
+    </section>
   `;
-  drawChart(document.querySelector("#priceChart"), product.price_history || [], product.prix_estime);
-  document.querySelector("#addToPortfolioBtn").addEventListener("click", addSelectedProduct);
 }
 
-function drawChart(canvas, history, currentPrice) {
-  const ctx = canvas.getContext("2d");
-  const width = canvas.width;
-  const height = canvas.height;
-  ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = "#111127";
-  ctx.fillRect(0, 0, width, height);
-  const points = history.length ? history : [{ price: currentPrice || 0 }];
-  const values = points.map(point => Number(point.price || 0)).filter(Boolean);
-  if (!values.length) {
-    ctx.fillStyle = "#a0aec0";
-    ctx.fillText("Historique indisponible", 24, 40);
-    return;
-  }
-  const min = Math.min(...values) * 0.96;
-  const max = Math.max(...values) * 1.04;
-  ctx.strokeStyle = "rgba(255,255,255,.12)";
-  ctx.lineWidth = 1;
-  for (let i = 0; i < 5; i++) {
-    const y = 24 + i * ((height - 48) / 4);
-    ctx.beginPath();
-    ctx.moveTo(36, y);
-    ctx.lineTo(width - 20, y);
-    ctx.stroke();
-  }
-  ctx.strokeStyle = "#ffd700";
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  values.forEach((value, index) => {
-    const x = 36 + index * ((width - 68) / Math.max(1, values.length - 1));
-    const y = height - 28 - ((value - min) / Math.max(1, max - min)) * (height - 58);
-    if (index === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
+function renderItemRow(item) {
+  const totalMarket = Number(item.prix_marche || 0) * Number(item.quantite || 0);
+  const totalBuy = Number(item.prix_achete || 0) * Number(item.quantite || 0);
+  const pnl = totalMarket - totalBuy;
+  const link = item.price_source_url
+    ? `<a class="neon-link" href="${escapeHtml(item.price_source_url)}" target="_blank" rel="noreferrer">CardMarket</a>`
+    : `<span class="muted">Aucun lien</span>`;
+  return `
+    <tr data-id="${escapeHtml(item.id)}">
+      <td><span class="editable-cell" data-field="nom" data-type="text">${escapeHtml(item.nom)}</span></td>
+      <td><span class="editable-cell" data-field="quantite" data-type="number">${item.quantite || 0}</span></td>
+      <td><span class="editable-cell" data-field="prix_achete" data-type="money">${euro(item.prix_achete)}</span></td>
+      <td><span class="editable-cell" data-field="prix_marche" data-type="money">${euro(item.prix_marche)}</span></td>
+      <td>${euro(totalMarket)}</td>
+      <td class="${pnl >= 0 ? "positive" : "negative"}">${euro(pnl)}</td>
+      <td>
+        ${link}
+        <button class="mini-link-btn" data-link-edit title="Modifier le lien">✎</button>
+      </td>
+      <td><button class="icon-btn" data-delete title="Supprimer">🗑️</button></td>
+    </tr>
+  `;
+}
+
+function bindTableEvents() {
+  document.querySelectorAll("[data-add-category]").forEach(button => {
+    button.addEventListener("click", () => openManualModal(button.dataset.addCategory));
   });
-  ctx.stroke();
-  ctx.fillStyle = "#ffffff";
-  ctx.font = "14px DM Sans";
-  ctx.fillText(`${euro(values[values.length - 1])}`, 40, 28);
+  document.querySelectorAll(".editable-cell").forEach(cell => {
+    cell.addEventListener("click", () => startEdit(cell));
+  });
+  document.querySelectorAll("[data-link-edit]").forEach(button => {
+    button.addEventListener("click", event => editLink(event.target.closest("tr").dataset.id));
+  });
+  document.querySelectorAll("[data-delete]").forEach(button => {
+    button.addEventListener("click", async event => {
+      const id = event.target.closest("tr").dataset.id;
+      if (!confirm("Supprimer cet item ?")) return;
+      await api.deleteItem(id);
+      await loadCollection();
+    });
+  });
 }
 
-async function addSelectedProduct() {
-  const product = state.selectedProduct;
-  if (!product) return;
-  const payload = {
-    id: `cm_${product.id || slugLike(product.nom)}`,
-    nom: product.nom,
-    categorie: mapCategory(product.categorie),
-    product_category: product.categorie || "Produit",
-    product_id: product.id || "",
-    quantite: Number(document.querySelector("#addQty").value || 1),
-    prix_achete: Number(document.querySelector("#addBuyPrice").value || 0),
-    prix_marche: product.prix_estime || null,
-    image_url: product.image_url || "/static/images/pokeball.svg",
-    search_query: product.nom,
-    price_source: product.price_source || "CardMarket API TCG",
-    price_source_url: product.price_source_url || "",
-    price_history: product.price_history || [],
-    price_status: product.prix_estime ? "ok" : "pending",
-    derniere_maj: new Date().toISOString().slice(0, 19),
-  };
+function openManualModal(category) {
+  state.addCategory = category;
+  const form = document.querySelector("#manualForm");
+  form.reset();
+  form.categorie.value = category;
+  form.quantite.value = 1;
+  form.prix_achete.value = 0;
+  form.prix_marche.value = 0;
+  document.querySelector("#manualModalTitle").textContent = `Ajouter · ${category}`;
+  document.querySelector("#manualModal").classList.remove("hidden");
+  form.nom.focus();
+}
+
+function closeManualModal() {
+  document.querySelector("#manualModal").classList.add("hidden");
+}
+
+async function submitManualItem(event) {
+  event.preventDefault();
+  const form = new FormData(event.target);
+  const payload = Object.fromEntries(form.entries());
+  payload.quantite = Number(payload.quantite || 1);
+  payload.prix_achete = Number(payload.prix_achete || 0);
+  payload.prix_marche = Number(payload.prix_marche || 0);
+  payload.search_query = payload.nom;
+  payload.price_source = payload.price_source_url ? "CardMarket manuel" : "";
+  payload.price_status = "manual";
+  payload.derniere_maj = new Date().toISOString().slice(0, 19);
   await api.addItem(payload);
-  await loadPortfolio();
+  closeManualModal();
+  await loadCollection();
 }
 
-function mapCategory(category) {
-  if (category === "ETB") return "ETB/BUNDLE";
-  if (category === "Bundle") return "ETB/BUNDLE";
-  if (category === "Tin") return "TINS";
-  if (category === "Blister") return "TRIPACK/DUOPACK";
-  if (category === "Booster" || category === "Display") return "BOOSTER À L'UNITÉ/ARTSET";
-  return "COFFRET";
-}
-
-function renderPortfolio() {
-  const grid = document.querySelector("#portfolioGrid");
-  if (!state.items.length) {
-    grid.innerHTML = `<div class="loading-card">Ton portefeuille est vide. Recherche un produit CardMarket et ajoute-le.</div>`;
-    return;
+function startEdit(cell) {
+  const row = cell.closest("tr");
+  const id = row.dataset.id;
+  const item = state.items.find(entry => entry.id === id);
+  const field = cell.dataset.field;
+  const input = document.createElement("input");
+  input.className = "inline-input";
+  input.type = cell.dataset.type === "text" ? "text" : "number";
+  if (input.type === "number") {
+    input.step = field === "quantite" ? "1" : "0.01";
+    input.min = "0";
   }
-  grid.innerHTML = state.items.map(item => `
-    <article class="portfolio-card">
-      <img src="${escapeHtml(item.image_url || "/static/images/pokeball.svg")}" alt="${escapeHtml(item.nom)}">
-      <div>
-        <span class="product-category">${escapeHtml(item.product_category || item.categorie || "Produit")}</span>
-        <h3>${escapeHtml(item.nom)}</h3>
-        <p>Qté ${item.quantite || 0} · Achat ${euro(item.prix_achete)}</p>
-        <strong>${item.prix_marche ? euro(item.prix_marche) : "Prix indisponible"}</strong>
-        <small>${item.price_status === "cached" ? "Dernier prix connu" : dateLabel(item.derniere_maj)}</small>
-        ${item.price_source_url ? `<a class="source-link" href="${escapeHtml(item.price_source_url)}" target="_blank" rel="noreferrer">CardMarket</a>` : ""}
-      </div>
-      <div class="portfolio-actions">
-        <button class="icon-btn" data-refresh-id="${escapeHtml(item.id)}" title="Rafraîchir">🔄</button>
-        <button class="icon-btn" data-delete-id="${escapeHtml(item.id)}" title="Supprimer">🗑️</button>
-      </div>
-    </article>
-  `).join("");
-  document.querySelectorAll("[data-refresh-id]").forEach(button => {
-    button.addEventListener("click", async () => {
-      await api.updatePrice(button.dataset.refreshId);
-      await loadPortfolio();
-    });
-  });
-  document.querySelectorAll("[data-delete-id]").forEach(button => {
-    button.addEventListener("click", async () => {
-      await api.deleteItem(button.dataset.deleteId);
-      await loadPortfolio();
-    });
+  input.value = item[field] ?? "";
+  cell.replaceWith(input);
+  input.focus();
+  input.select();
+
+  const save = async () => {
+    const value = input.type === "number" ? Number(input.value || 0) : input.value.trim();
+    await api.updateItem(id, { [field]: value, derniere_maj: new Date().toISOString().slice(0, 19) });
+    await loadCollection();
+  };
+  input.addEventListener("blur", save, { once: true });
+  input.addEventListener("keydown", event => {
+    if (event.key === "Enter") input.blur();
+    if (event.key === "Escape") loadCollection();
   });
 }
 
-async function refreshPortfolio() {
-  for (const item of state.items) {
-    await api.updatePrice(item.id).catch(() => null);
-  }
-  await loadPortfolio();
-}
-
-function slugLike(value) {
-  return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+async function editLink(id) {
+  const item = state.items.find(entry => entry.id === id);
+  const value = prompt("Lien CardMarket de l'item :", item.price_source_url || "");
+  if (value === null) return;
+  await api.updateItem(id, {
+    price_source_url: value.trim(),
+    price_source: value.trim() ? "CardMarket manuel" : "",
+    derniere_maj: new Date().toISOString().slice(0, 19),
+  });
+  await loadCollection();
 }
