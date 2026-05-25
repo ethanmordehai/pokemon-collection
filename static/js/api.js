@@ -31,8 +31,10 @@ const api = {
     return requestJson("/api/price/update_all", { method: "POST" });
   },
 
-  async searchProduct(query) {
-    return requestJson(`/api/search_product?q=${encodeURIComponent(query)}`);
+  async searchProduct(query, category = "") {
+    const params = new URLSearchParams({ q: query });
+    if (category) params.set("category", category);
+    return requestJson(`/api/search_product?${params.toString()}`);
   },
 
   async news() {
