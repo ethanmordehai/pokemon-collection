@@ -45,8 +45,11 @@ CATEGORIES = [
     "TINS",
     "POKEBOX",
     "TRIPACK/DUOPACK",
-    "BOOSTER À L'UNITÉ/ARTSET",
+    "BOOSTER \u00c0 L'UNIT\u00c9/ARTSET",
 ]
+
+DEFAULT_COLLECTION_ID = "collection_ethan"
+DEFAULT_COLLECTION_NAME = "Collection Ethan"
 
 PLACEHOLDER_IMAGE = "/static/images/pokeball.svg"
 
@@ -168,17 +171,63 @@ def normalize_item(raw):
     return compute_item(item)
 
 
+def empty_collection(name):
+    return {
+        "id": slugify(name),
+        "name": name,
+        "last_updated": now_iso(),
+        "items": [],
+    }
+
+
+def ensure_collections_schema(data):
+    if "collections" in data:
+        data.setdefault("active_collection_id", data["collections"][0]["id"] if data["collections"] else DEFAULT_COLLECTION_ID)
+        for collection in data.get("collections", []):
+            collection.setdefault("id", slugify(collection.get("name", DEFAULT_COLLECTION_NAME)))
+            collection.setdefault("name", collection["id"])
+            collection.setdefault("last_updated", data.get("last_updated", now_iso()))
+            collection["items"] = [compute_item(item) for item in collection.get("items", [])]
+        return data
+
+    items = [compute_item(item) for item in data.get("items", [])]
+    migrated = {
+        "last_updated": data.get("last_updated", now_iso()),
+        "active_collection_id": DEFAULT_COLLECTION_ID,
+        "collections": [
+            {
+                "id": DEFAULT_COLLECTION_ID,
+                "name": DEFAULT_COLLECTION_NAME,
+                "last_updated": data.get("last_updated", now_iso()),
+                "items": items,
+            }
+        ],
+    }
+    save_collection(migrated)
+    return migrated
+
+
 def load_collection():
     if not DATA_FILE.exists():
         items = [normalize_item(item) for item in INITIAL_ITEMS]
-        data = {"last_updated": now_iso(), "items": items}
+        timestamp = now_iso()
+        data = {
+            "last_updated": timestamp,
+            "active_collection_id": DEFAULT_COLLECTION_ID,
+            "collections": [
+                {
+                    "id": DEFAULT_COLLECTION_ID,
+                    "name": DEFAULT_COLLECTION_NAME,
+                    "last_updated": timestamp,
+                    "items": items,
+                }
+            ],
+        }
         save_collection(data)
         return data
     with DATA_FILE.open("r", encoding="utf-8") as file:
         data = json.load(file)
-    data.setdefault("last_updated", now_iso())
-    data["items"] = [compute_item(item) for item in data.get("items", [])]
-    return data
+    return ensure_collections_schema(data)
 
 
 def save_collection(data):
@@ -200,6 +249,33 @@ def summarize_collection(data):
         "pnl": round(pnl, 2),
         "pnl_pct": round(pnl_pct, 1),
     }
+
+
+def list_collection_meta(data):
+    return [
+        {
+            "id": collection["id"],
+            "name": collection.get("name", collection["id"]),
+            "last_updated": collection.get("last_updated", ""),
+            "item_count": len(collection.get("items", [])),
+        }
+        for collection in data.get("collections", [])
+    ]
+
+
+def selected_collection(data, collection_id=None):
+    wanted = collection_id or DEFAULT_COLLECTION_ID
+    collection = next((entry for entry in data.get("collections", []) if entry.get("id") == wanted), None)
+    if collection:
+        data["active_collection_id"] = collection["id"]
+        return collection
+    if data.get("collections"):
+        data["active_collection_id"] = data["collections"][0]["id"]
+        return data["collections"][0]
+    collection = empty_collection(DEFAULT_COLLECTION_NAME)
+    data["collections"] = [collection]
+    data["active_collection_id"] = collection["id"]
+    return collection
 
 
 def headers():
@@ -941,35 +1017,77 @@ def index():
 
 @app.get("/api/collection")
 def api_collection():
+    collection_id = request.args.get("collection_id", "").strip()
     with data_lock:
         data = load_collection()
-    return jsonify({"collection": data, "summary": summarize_collection(data), "categories": CATEGORIES})
+        collection = selected_collection(data, collection_id)
+        save_collection(data)
+    return jsonify({
+        "collection": collection,
+        "collections": list_collection_meta(data),
+        "active_collection_id": collection["id"],
+        "summary": summarize_collection(collection),
+        "categories": CATEGORIES,
+    })
+
+
+@app.post("/api/collections")
+def api_create_collection():
+    payload = request.get_json(force=True)
+    name = (payload.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "Nom de collection obligatoire"}), 400
+    with data_lock:
+        data = load_collection()
+        collection = empty_collection(name)
+        existing_ids = {entry["id"] for entry in data.get("collections", [])}
+        base_id = collection["id"]
+        index = 2
+        while collection["id"] in existing_ids:
+            collection["id"] = f"{base_id}_{index}"
+            index += 1
+        data.setdefault("collections", []).append(collection)
+        data["active_collection_id"] = collection["id"]
+        data["last_updated"] = now_iso()
+        save_collection(data)
+    return jsonify({
+        "collection": collection,
+        "collections": list_collection_meta(data),
+        "active_collection_id": collection["id"],
+        "summary": summarize_collection(collection),
+        "categories": CATEGORIES,
+    }), 201
 
 
 @app.post("/api/collection/add")
 def api_add_item():
     payload = request.get_json(force=True)
+    collection_id = payload.pop("collection_id", None) or request.args.get("collection_id")
     with data_lock:
         data = load_collection()
+        collection = selected_collection(data, collection_id)
         item = normalize_item(payload)
-        existing_ids = {entry["id"] for entry in data["items"]}
+        existing_ids = {entry["id"] for entry in collection["items"]}
         base_id = item["id"]
         index = 2
         while item["id"] in existing_ids:
             item["id"] = f"{base_id}_{index}"
             index += 1
-        data["items"].append(item)
+        collection["items"].append(item)
+        collection["last_updated"] = now_iso()
         data["last_updated"] = now_iso()
         save_collection(data)
-    return jsonify({"item": item, "summary": summarize_collection(data)}), 201
+    return jsonify({"item": item, "summary": summarize_collection(collection)}), 201
 
 
 @app.put("/api/collection/<item_id>")
 def api_update_item(item_id):
     payload = request.get_json(force=True)
+    collection_id = payload.pop("collection_id", None) or request.args.get("collection_id")
     with data_lock:
         data = load_collection()
-        item = find_item(data, item_id)
+        collection = selected_collection(data, collection_id)
+        item = find_item(collection, item_id)
         if not item:
             return jsonify({"error": "Item introuvable"}), 404
         for key in [
@@ -981,60 +1099,72 @@ def api_update_item(item_id):
             if key in payload:
                 item[key] = payload[key]
         compute_item(item)
+        collection["last_updated"] = now_iso()
         data["last_updated"] = now_iso()
         save_collection(data)
-    return jsonify({"item": item, "summary": summarize_collection(data)})
+    return jsonify({"item": item, "summary": summarize_collection(collection)})
 
 
 @app.delete("/api/collection/<item_id>")
 def api_delete_item(item_id):
+    collection_id = request.args.get("collection_id", "").strip()
     with data_lock:
         data = load_collection()
-        before = len(data["items"])
-        data["items"] = [item for item in data["items"] if item["id"] != item_id]
-        if len(data["items"]) == before:
+        collection = selected_collection(data, collection_id)
+        before = len(collection["items"])
+        collection["items"] = [item for item in collection["items"] if item["id"] != item_id]
+        if len(collection["items"]) == before:
             return jsonify({"error": "Item introuvable"}), 404
+        collection["last_updated"] = now_iso()
         data["last_updated"] = now_iso()
         save_collection(data)
-    return jsonify({"ok": True, "summary": summarize_collection(data)})
+    return jsonify({"ok": True, "summary": summarize_collection(collection)})
 
 
 @app.get("/api/price/<item_id>")
 @app.get("/api/update_price/<item_id>")
 def api_update_price(item_id):
+    collection_id = request.args.get("collection_id", "").strip()
     with data_lock:
         data = load_collection()
-        item = find_item(data, item_id)
+        collection = selected_collection(data, collection_id)
+        item = find_item(collection, item_id)
         if not item:
             return jsonify({"error": "Item introuvable"}), 404
     updated = update_item_price(item)
     with data_lock:
         data = load_collection()
-        saved = find_item(data, item_id)
+        collection = selected_collection(data, collection_id)
+        saved = find_item(collection, item_id)
         saved.update(updated)
+        collection["last_updated"] = now_iso()
         data["last_updated"] = now_iso()
         save_collection(data)
-    return jsonify({"item": updated, "summary": summarize_collection(data)})
+    return jsonify({"item": updated, "summary": summarize_collection(collection)})
 
 
-def update_all_worker():
+def update_all_worker(collection_id=None):
     with data_lock:
         data = load_collection()
-        item_ids = [item["id"] for item in data["items"]]
+        collection = selected_collection(data, collection_id)
+        item_ids = [item["id"] for item in collection["items"]]
     total = len(item_ids)
     for index, item_id in enumerate(item_ids, start=1):
         with data_lock:
             data = load_collection()
-            item = find_item(data, item_id)
+            collection = selected_collection(data, collection_id)
+            item = find_item(collection, item_id)
             if not item:
                 continue
         progress_queue.put({"type": "progress", "current": index, "total": total, "item": item["nom"]})
         updated = update_item_price(item)
         with data_lock:
             data = load_collection()
-            saved = find_item(data, item_id)
+            collection = selected_collection(data, collection_id)
+            saved = find_item(collection, item_id)
             if saved:
                 saved.update(updated)
+                collection["last_updated"] = now_iso()
                 data["last_updated"] = now_iso()
                 save_collection(data)
         progress_queue.put({"type": "item_done", "current": index, "total": total, "item": updated})
@@ -1046,7 +1176,8 @@ def update_all_worker():
 @app.post("/api/price/update_all")
 @app.post("/api/update_all_prices")
 def api_update_all_prices():
-    thread = threading.Thread(target=update_all_worker, daemon=True)
+    collection_id = request.args.get("collection_id", "").strip()
+    thread = threading.Thread(target=update_all_worker, args=(collection_id,), daemon=True)
     thread.start()
     return jsonify({"ok": True, "message": "Mise à jour lancée"})
 
@@ -1148,9 +1279,11 @@ def api_search_product():
 
 @app.get("/api/news")
 def api_news():
+    collection_id = request.args.get("collection_id", "").strip()
     with data_lock:
         data = load_collection()
-    items = data.get("items", [])
+        collection = selected_collection(data, collection_id)
+    items = collection.get("items", [])
     sorted_up = sorted(
         [item for item in items if item.get("variation_pct") is not None],
         key=lambda item: item.get("variation_pct", 0),
@@ -1168,8 +1301,10 @@ def api_news():
 
 @app.get("/api/export/csv")
 def api_export_csv():
+    collection_id = request.args.get("collection_id", "").strip()
     with data_lock:
         data = load_collection()
+        collection = selected_collection(data, collection_id)
     output = io.StringIO()
     fieldnames = [
         "id", "categorie", "nom", "quantite", "prix_achete", "prix_marche",
@@ -1178,7 +1313,7 @@ def api_export_csv():
     ]
     writer = csv.DictWriter(output, fieldnames=fieldnames)
     writer.writeheader()
-    for item in data.get("items", []):
+    for item in collection.get("items", []):
         writer.writerow({key: item.get(key, "") for key in fieldnames})
     return Response(
         output.getvalue(),

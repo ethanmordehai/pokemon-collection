@@ -893,6 +893,20 @@ tr.item-row:hover {
   flex-wrap: wrap;
 }
 
+.collection-switcher select {
+  min-width: 220px;
+}
+
+.eyebrow {
+  display: inline-flex;
+  margin-bottom: 10px;
+  color: #00f0ff;
+  font-family: "Chakra Petch", sans-serif;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
 .manual-tables {
   display: grid;
   gap: 20px;
@@ -929,7 +943,7 @@ tr.item-row:hover {
 
 .manual-table {
   width: 100%;
-  min-width: 980px;
+  min-width: 1120px;
   border-collapse: collapse;
 }
 
@@ -976,6 +990,33 @@ tr.item-row:hover {
 
 .neon-link:hover {
   text-decoration: underline;
+}
+
+.manual-variation {
+  display: inline-flex;
+  min-width: 84px;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-weight: 800;
+  font-size: 0.86rem;
+}
+
+.manual-variation.up {
+  color: #5cffad;
+  background: rgba(72, 187, 120, 0.16);
+  box-shadow: 0 0 18px rgba(72, 187, 120, 0.12);
+}
+
+.manual-variation.down {
+  color: #ff8aa0;
+  background: rgba(252, 129, 129, 0.16);
+  box-shadow: 0 0 18px rgba(252, 129, 129, 0.12);
+}
+
+.manual-variation.neutral {
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .mini-link-btn {
@@ -1028,6 +1069,11 @@ tr.item-row:hover {
   display: grid;
   gap: 6px;
   color: var(--text-secondary);
+}
+
+.collection-modal p {
+  margin: 0;
+  line-height: 1.5;
 }
 
 .modal-grid-2 {

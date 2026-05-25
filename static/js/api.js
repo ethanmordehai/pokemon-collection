@@ -1,9 +1,19 @@
 const api = {
-  async collection() {
-    return requestJson("/api/collection");
+  async collection(collectionId = "") {
+    const params = collectionId ? `?collection_id=${encodeURIComponent(collectionId)}` : "";
+    return requestJson(`/api/collection${params}`);
   },
 
-  async addItem(payload) {
+  async createCollection(name) {
+    return requestJson("/api/collections", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+  },
+
+  async addItem(payload, collectionId = "") {
+    if (collectionId) payload.collection_id = collectionId;
     return requestJson("/api/collection/add", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -11,7 +21,8 @@ const api = {
     });
   },
 
-  async updateItem(id, payload) {
+  async updateItem(id, payload, collectionId = "") {
+    if (collectionId) payload.collection_id = collectionId;
     return requestJson(`/api/collection/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -19,8 +30,9 @@ const api = {
     });
   },
 
-  async deleteItem(id) {
-    return requestJson(`/api/collection/${id}`, { method: "DELETE" });
+  async deleteItem(id, collectionId = "") {
+    const params = collectionId ? `?collection_id=${encodeURIComponent(collectionId)}` : "";
+    return requestJson(`/api/collection/${id}${params}`, { method: "DELETE" });
   },
 
   async updatePrice(id) {
